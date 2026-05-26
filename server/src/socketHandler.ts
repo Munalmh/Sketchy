@@ -56,6 +56,17 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
       }
     });
 
+    // Handle Undo Stroke
+    socket.on('undo_stroke', (data: { roomId: string }) => {
+      const { roomId } = data;
+      const room = gameManager.getRoom(roomId);
+
+      // Verification: only active drawer can undo
+      if (room && room.phase === 'DRAWING' && room.drawerId === socket.id) {
+        gameManager.undoLastStroke(roomId);
+      }
+    });
+
     // Handle Word Selection by Drawer
     socket.on('select_word', (data: { roomId: string; word: string }) => {
       const { roomId, word } = data;

@@ -480,6 +480,25 @@ export class GameManager {
     }
   }
 
+  public undoLastStroke(roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room || room.canvasHistory.length === 0) return;
+
+    // Find the pathId of the very last stroke segment
+    const lastStroke = room.canvasHistory[room.canvasHistory.length - 1];
+    const lastPathId = lastStroke.pathId;
+
+    if (lastPathId) {
+      // Remove all strokes with the same pathId
+      room.canvasHistory = room.canvasHistory.filter(s => s.pathId !== lastPathId);
+    } else {
+      // Fallback
+      room.canvasHistory.pop();
+    }
+
+    this.broadcastState(roomId);
+  }
+
   public broadcastState(roomId: string) {
     const room = this.rooms.get(roomId);
     if (!room) return;
