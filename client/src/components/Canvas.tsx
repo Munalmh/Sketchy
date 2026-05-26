@@ -74,6 +74,31 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
     contextRef.current = ctx;
   }, []);
 
+  // Prevent browser window scrolling/bouncing on mobile touch interactions
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const preventTouchScroll = (e: TouchEvent) => {
+      if (isDrawer) {
+        if (e.cancelable) {
+          e.preventDefault();
+        }
+      }
+    };
+
+    // Add native listeners with passive: false to allow preventDefault
+    canvas.addEventListener('touchstart', preventTouchScroll, { passive: false });
+    canvas.addEventListener('touchmove', preventTouchScroll, { passive: false });
+    canvas.addEventListener('touchend', preventTouchScroll, { passive: false });
+
+    return () => {
+      canvas.removeEventListener('touchstart', preventTouchScroll);
+      canvas.removeEventListener('touchmove', preventTouchScroll);
+      canvas.removeEventListener('touchend', preventTouchScroll);
+    };
+  }, [isDrawer]);
+
   // Scanline Flood Fill implementation
   const performFloodFill = useCallback((startX: number, startY: number, fillHexColor: string) => {
     const canvas = canvasRef.current;
@@ -427,7 +452,7 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
           onTouchStart={startDrawing}
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
-          style={getCursorStyle()}
+          style={{ ...getCursorStyle(), touchAction: 'none' }}
           className="w-full h-full bg-white rounded-xl shadow-inner transition-all"
         />
         
