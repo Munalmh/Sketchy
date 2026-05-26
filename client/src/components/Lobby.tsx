@@ -130,7 +130,7 @@ export const Lobby: React.FC<LobbyProps> = ({ onJoinRoom, initialRoomId = '' }) 
 
         {/* Footer */}
         <div className="text-center text-[10px] text-slate-600 font-semibold tracking-wider uppercase">
-          Sketchy.io &copy; {new Date().getFullYear()} &bull; Real-time Socket.io Clone
+          Sketchy.io &copy; {new Date().getFullYear()} &bull; Munal Mahato
         </div>
 
       </div>
