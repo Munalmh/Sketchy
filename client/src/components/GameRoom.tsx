@@ -17,7 +17,7 @@ interface GameRoomProps {
 
 const BACKEND_URL = window.location.hostname === 'localhost' 
   ? 'http://localhost:5050' 
-  : `${window.location.protocol}//${window.location.hostname}:5050`;
+  : 'https://sketchy-backend-uw3w.onrender.com';
 
 export const GameRoom: React.FC<GameRoomProps> = ({
   roomId,
