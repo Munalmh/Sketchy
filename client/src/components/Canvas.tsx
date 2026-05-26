@@ -428,7 +428,7 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
           style={getCursorStyle()}
-          className="w-full h-full bg-white rounded-xl shadow-inner object-contain transition-all"
+          className="w-full h-full bg-white rounded-xl shadow-inner transition-all"
         />
         
         {/* Read-Only Indicator overlay */}
