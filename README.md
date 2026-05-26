@@ -1,6 +1,6 @@
 # Sketchy.io 🎨
 
-Sketchy.io is a production-ready, real-time multiplayer drawing and guessing game clone of Skribbl.io. It features a modern, responsive user interface with glassmorphic styling, seed-based dynamic avatars, and interactive scoreboard lists.
+Sketchy.io is a production-ready, real-time multiplayer drawing and guessing game. It features a modern, responsive user interface with glassmorphic styling, seed-based dynamic avatars, and interactive scoreboard lists.
 
 ## 🚀 Tech Stack
 
