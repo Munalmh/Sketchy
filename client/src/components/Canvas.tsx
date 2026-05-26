@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
 import type { Stroke } from '../types';
-import { Trash2, ShieldAlert, Edit2 } from 'lucide-react';
+import { Trash2, ShieldAlert, Edit2, PaintBucket } from 'lucide-react';
 
 interface CanvasProps {
   isDrawer: boolean;
@@ -32,16 +32,33 @@ const BRUSH_SIZES = [
   { label: 'XL', value: 40 },
 ];
 
+// Helper to parse hex string to RGBA object for flood fill
+function hexToRGBA(hex: string) {
+  let r = 0, g = 0, b = 0, a = 255;
+  const cleanedHex = hex.replace('#', '');
+  if (cleanedHex.length === 3) {
+    r = parseInt(cleanedHex[0] + cleanedHex[0], 16);
+    g = parseInt(cleanedHex[1] + cleanedHex[1], 16);
+    b = parseInt(cleanedHex[2] + cleanedHex[2], 16);
+  } else if (cleanedHex.length === 6) {
+    r = parseInt(cleanedHex.substring(0, 2), 16);
+    g = parseInt(cleanedHex.substring(2, 4), 16);
+    b = parseInt(cleanedHex.substring(4, 6), 16);
+  }
+  return { r, g, b, a };
+}
+
 export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvasHistory = [] }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const contextRef = useRef<CanvasRenderingContext2D | null>(null);
 
   const [color, setColor] = useState('#000000');
   const [brushSize, setBrushSize] = useState(10);
-  const [isEraser, setIsEraser] = useState(false);
+  const [tool, setTool] = useState<'pencil' | 'eraser' | 'fill'>('pencil');
   const [isDrawing, setIsDrawing] = useState(false);
   
-  // Keep track of last drawn position
+  // Track how many segments of the history have already been drawn locally
+  const renderedCountRef = useRef(0);
   const lastPosRef = useRef<{ x: number; y: number } | null>(null);
 
   // Initialize canvas context
@@ -49,7 +66,7 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
     ctx.lineCap = 'round';
@@ -57,8 +74,122 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
     contextRef.current = ctx;
   }, []);
 
+  // Scanline Flood Fill implementation
+  const performFloodFill = useCallback((startX: number, startY: number, fillHexColor: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = contextRef.current;
+    if (!ctx) return;
+
+    const width = canvas.width;
+    const height = canvas.height;
+    const startXInt = Math.floor(startX);
+    const startYInt = Math.floor(startY);
+
+    if (startXInt < 0 || startXInt >= width || startYInt < 0 || startYInt >= height) return;
+
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const data = imgData.data;
+    const fillRGBA = hexToRGBA(fillHexColor);
+
+    const startIndex = (startYInt * width + startXInt) * 4;
+    const startR = data[startIndex];
+    const startG = data[startIndex + 1];
+    const startB = data[startIndex + 2];
+    const startA = data[startIndex + 3];
+
+    // If start color is already the fill color, return
+    if (
+      startR === fillRGBA.r &&
+      startG === fillRGBA.g &&
+      startB === fillRGBA.b &&
+      startA === fillRGBA.a
+    ) {
+      return;
+    }
+
+    const queue: [number, number][] = [[startXInt, startYInt]];
+
+    const colorsMatch = (idx: number) => {
+      // 10 units color tolerance
+      return (
+        Math.abs(data[idx] - startR) < 10 &&
+        Math.abs(data[idx + 1] - startG) < 10 &&
+        Math.abs(data[idx + 2] - startB) < 10 &&
+        Math.abs(data[idx + 3] - startA) < 10
+      );
+    };
+
+    const setPixelColor = (idx: number) => {
+      data[idx] = fillRGBA.r;
+      data[idx + 1] = fillRGBA.g;
+      data[idx + 2] = fillRGBA.b;
+      data[idx + 3] = fillRGBA.a;
+    };
+
+    while (queue.length > 0) {
+      const current = queue.pop();
+      if (!current) continue;
+
+      const [cx, cy] = current;
+      let left = cx;
+      let right = cx;
+
+      while (left > 0 && colorsMatch((cy * width + (left - 1)) * 4)) {
+        left--;
+      }
+
+      while (right < width - 1 && colorsMatch((cy * width + (right + 1)) * 4)) {
+        right++;
+      }
+
+      for (let x = left; x <= right; x++) {
+        setPixelColor((cy * width + x) * 4);
+      }
+
+      // Check row above
+      if (cy > 0) {
+        let inSegment = false;
+        for (let x = left; x <= right; x++) {
+          const idx = ((cy - 1) * width + x) * 4;
+          if (colorsMatch(idx)) {
+            if (!inSegment) {
+              queue.push([x, cy - 1]);
+              inSegment = true;
+            }
+          } else {
+            inSegment = false;
+          }
+        }
+      }
+
+      // Check row below
+      if (cy < height - 1) {
+        let inSegment = false;
+        for (let x = left; x <= right; x++) {
+          const idx = ((cy + 1) * width + x) * 4;
+          if (colorsMatch(idx)) {
+            if (!inSegment) {
+              queue.push([x, cy + 1]);
+              inSegment = true;
+            }
+          } else {
+            inSegment = false;
+          }
+        }
+      }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+  }, []);
+
   // Helper to draw a single stroke segment on the local canvas
   const drawSegment = useCallback((stroke: Stroke) => {
+    if (stroke.isFill) {
+      performFloodFill(stroke.x, stroke.y, stroke.color);
+      return;
+    }
+
     const ctx = contextRef.current;
     if (!ctx) return;
 
@@ -76,21 +207,35 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
     }
     ctx.stroke();
     ctx.closePath();
-  }, []);
+  }, [performFloodFill]);
 
-  // Re-draw whole history when it changes (e.g. on join or clear)
+  // Performance-Optimized drawing: Only draw new incoming segments since last counter
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = contextRef.current;
     if (!canvas || !ctx) return;
 
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (canvasHistory.length === 0) {
+      // Clear canvas completely
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      renderedCountRef.current = 0;
+      return;
+    }
 
-    // Draw all segments in history
-    canvasHistory.forEach(stroke => {
-      drawSegment(stroke);
-    });
+    const startIndex = renderedCountRef.current;
+    if (startIndex > canvasHistory.length) {
+      // State reset or round mismatch, redraw everything
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      canvasHistory.forEach(stroke => {
+        drawSegment(stroke);
+      });
+    } else {
+      // Incremental render of only new elements (extremely fast!)
+      for (let i = startIndex; i < canvasHistory.length; i++) {
+        drawSegment(canvasHistory[i]);
+      }
+    }
+    renderedCountRef.current = canvasHistory.length;
   }, [canvasHistory, drawSegment]);
 
   // Handle incoming socket events for drawing
@@ -106,6 +251,7 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
       const ctx = contextRef.current;
       if (canvas && ctx) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        renderedCountRef.current = 0;
       }
     };
 
@@ -136,7 +282,6 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
       clientY = e.clientY;
     }
 
-    // Map screen bounds to logical 800x500 space
     const x = ((clientX - rect.left) / rect.width) * canvas.width;
     const y = ((clientY - rect.top) / rect.height) * canvas.height;
 
@@ -147,7 +292,6 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
     if (!isDrawer) return;
 
-    // Prevent default touch scrolling
     if (e.cancelable) {
       e.preventDefault();
     }
@@ -155,10 +299,33 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
     const pos = getCoordinates(e);
     if (!pos) return;
 
+    // 1. Paint Bucket Fill mode
+    if (tool === 'fill') {
+      const stroke: Stroke = {
+        x: pos.x,
+        y: pos.y,
+        lastX: null,
+        lastY: null,
+        color,
+        size: 0,
+        isEraser: false,
+        isFill: true
+      };
+      
+      // Perform local fill
+      performFloodFill(pos.x, pos.y, color);
+      
+      // Broadcast fill event
+      if (socket) {
+        socket.emit('draw_stroke', { roomId, stroke });
+      }
+      return;
+    }
+
+    // 2. Normal Drawing mode
     setIsDrawing(true);
     lastPosRef.current = pos;
 
-    // Draw single dot on click/tap
     const stroke: Stroke = {
       x: pos.x,
       y: pos.y,
@@ -166,7 +333,7 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
       lastY: null,
       color,
       size: brushSize,
-      isEraser,
+      isEraser: tool === 'eraser',
     };
 
     drawSegment(stroke);
@@ -176,9 +343,8 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
   };
 
   const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !isDrawer || !lastPosRef.current) return;
+    if (!isDrawing || !isDrawer || !lastPosRef.current || tool === 'fill') return;
 
-    // Prevent default touch scrolling
     if (e.cancelable) {
       e.preventDefault();
     }
@@ -188,9 +354,9 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
 
     const lastPos = lastPosRef.current;
 
-    // Throttling optimization: only draw if cursor moved more than a minimum distance
+    // Minimum distance threshold to ensure smooth curve segmenting and zero network lag
     const dist = Math.hypot(pos.x - lastPos.x, pos.y - lastPos.y);
-    if (dist < 1.5) return;
+    if (dist < 1.0) return;
 
     const stroke: Stroke = {
       x: pos.x,
@@ -199,7 +365,7 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
       lastY: lastPos.y,
       color,
       size: brushSize,
-      isEraser,
+      isEraser: tool === 'eraser',
     };
 
     drawSegment(stroke);
@@ -222,6 +388,30 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
     }
   };
 
+  // Generate dynamic inline cursor style depending on current tool
+  const getCursorStyle = () => {
+    if (!isDrawer) return { cursor: 'not-allowed' };
+    
+    if (tool === 'eraser') {
+      // Red square shape representing eraser
+      return {
+        cursor: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23ef4444' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect x='3' y='3' width='18' height='18' rx='4'/></svg>") 12 12, crosshair`
+      };
+    }
+    
+    if (tool === 'fill') {
+      // Paint bucket icon for flood fill
+      return {
+        cursor: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2310b981' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><path d='M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-5-4-5-4-3 2.4-5 4-3 3.5-3 5.5a7 7 0 0 0 7 7z'/></svg>") 12 12, crosshair`
+      };
+    }
+
+    // Classic blue pencil icon pointing to bottom-left (hotspot 2 22)
+    return {
+      cursor: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 24 24' fill='none' stroke='%234f46e5' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><path d='M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z'/><path d='m15 5 4 4'/></svg>") 2 22, crosshair`
+    };
+  };
+
   return (
     <div className="flex flex-col h-full select-none">
       {/* Logical Canvas Container */}
@@ -237,9 +427,8 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
           onTouchStart={startDrawing}
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
-          className={`w-full h-full bg-white rounded-xl shadow-inner object-contain transition-all ${
-            isDrawer ? 'cursor-crosshair' : 'cursor-not-allowed pointer-events-none'
-          }`}
+          style={getCursorStyle()}
+          className="w-full h-full bg-white rounded-xl shadow-inner object-contain transition-all"
         />
         
         {/* Read-Only Indicator overlay */}
@@ -262,11 +451,13 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
                 key={c}
                 onClick={() => {
                   setColor(c);
-                  setIsEraser(false);
+                  if (tool === 'eraser') {
+                    setTool('pencil');
+                  }
                 }}
                 style={{ backgroundColor: c }}
                 className={`w-7 h-7 rounded-lg border-2 relative transition-all duration-150 ${
-                  !isEraser && color === c
+                  tool !== 'eraser' && color === c
                     ? 'border-white scale-110 shadow-md ring-2 ring-indigo-500'
                     : 'border-slate-700 hover:scale-105'
                 }`}
@@ -285,7 +476,9 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
                 value={color}
                 onChange={(e) => {
                   setColor(e.target.value);
-                  setIsEraser(false);
+                  if (tool === 'eraser') {
+                    setTool('pencil');
+                  }
                 }}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 title="Custom color picker"
@@ -296,12 +489,12 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
 
           {/* Tools & Brush sizes */}
           <div className="flex items-center gap-4 flex-wrap">
-            {/* Mode selection (Draw vs Erase) */}
+            {/* Mode selection (Draw vs Erase vs Fill) */}
             <div className="flex bg-slate-900/50 p-1 rounded-xl border border-slate-700/30">
               <button
-                onClick={() => setIsEraser(false)}
+                onClick={() => setTool('pencil')}
                 className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-semibold transition-all ${
-                  !isEraser
+                  tool === 'pencil'
                     ? 'bg-indigo-600 text-white shadow-md'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
@@ -310,9 +503,20 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
                 Draw
               </button>
               <button
-                onClick={() => setIsEraser(true)}
+                onClick={() => setTool('fill')}
                 className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-semibold transition-all ${
-                  isEraser
+                  tool === 'fill'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <PaintBucket className="w-3.5 h-3.5" />
+                Fill
+              </button>
+              <button
+                onClick={() => setTool('eraser')}
+                className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-semibold transition-all ${
+                  tool === 'eraser'
                     ? 'bg-rose-600 text-white shadow-md'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
@@ -322,12 +526,15 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
               </button>
             </div>
 
-            {/* Brush Sizes */}
-            <div className="flex items-center gap-1.5 bg-slate-900/50 p-1 rounded-xl border border-slate-700/30">
+            {/* Brush Sizes (disabled during fill mode) */}
+            <div className={`flex items-center gap-1.5 bg-slate-900/50 p-1 rounded-xl border border-slate-700/30 transition-all ${
+              tool === 'fill' ? 'opacity-30 pointer-events-none' : ''
+            }`}>
               {BRUSH_SIZES.map((size) => (
                 <button
                   key={size.value}
                   onClick={() => setBrushSize(size.value)}
+                  disabled={tool === 'fill'}
                   className={`w-7 h-7 rounded-lg text-xs font-bold transition-all flex items-center justify-center ${
                     brushSize === size.value
                       ? 'bg-indigo-600 text-white shadow-md'
@@ -343,11 +550,13 @@ export const Canvas: React.FC<CanvasProps> = ({ isDrawer, socket, roomId, canvas
             <div className="flex items-center gap-2 border-l border-slate-700/50 pl-3">
               <div
                 style={{
-                  width: `${Math.max(4, Math.min(30, brushSize))}px`,
-                  height: `${Math.max(4, Math.min(30, brushSize))}px`,
-                  backgroundColor: isEraser ? '#ffffff' : color,
+                  width: `${tool === 'fill' ? 14 : Math.max(4, Math.min(30, brushSize))}px`,
+                  height: `${tool === 'fill' ? 14 : Math.max(4, Math.min(30, brushSize))}px`,
+                  backgroundColor: tool === 'eraser' ? '#ffffff' : color,
                 }}
-                className="rounded-full border border-slate-400/50 shadow-sm"
+                className={`border border-slate-400/50 shadow-sm transition-all ${
+                  tool === 'fill' ? 'rounded-md clip-path-bucket' : 'rounded-full'
+                }`}
               />
             </div>
 

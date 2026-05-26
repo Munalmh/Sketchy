@@ -16,6 +16,7 @@ export interface Stroke {
   color: string;
   size: number;
   isEraser: boolean;
+  isFill?: boolean;
 }
 
 export type GamePhase = 'LOBBY' | 'WORD_SELECTION' | 'DRAWING' | 'REVEAL' | 'GAME_OVER';
